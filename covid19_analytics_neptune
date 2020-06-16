@@ -1,0 +1,72 @@
+
+Step 15:
+In this step we are bulk loading Neptune data file to Neptune DB.
+
+-----------------------------------------------------------------------------------
+----------Shell script to automate distance edges load
+[ec2-user@ip-172-31-43-9 ~]$ cat source_s3_target_neptune.sh
+aws s3 mv 's3://cg-covid19-poc/gps_data_neptune_edges/' 's3://cg-covid19-poc/gps_data_neptune_edges_arch/'  --recursive
+
+aws s3 cp 's3://cg-covid19-poc/gps_data_neptune/' 's3://cg-covid19-poc/gps_data_neptune_edges/' --exclude '*' --include '*.csv' --recursive
+aws s3 mv 's3://cg-covid19-poc/gps_data_neptune/' 's3://cg-covid19-poc/gps_data_neptune_arch/'  --recursive
+curl -X POST \
+    -H 'Content-Type: application/json' \
+    https://covid19awssomeid.cluster-c6g3vtdf1uqy.ap-south-1.neptune.amazonaws.com:8182/loader -d '
+    {
+      "source" : "s3://cg-covid19-poc/gps_data_neptune_edges/",
+      "format" : "csv",
+      "iamRoleArn" : "arn:aws:iam::999735087364:role/NeptuneLoadFromS3",
+      "region" : "ap-south-1",
+      "failOnError" : "TRUE",
+      "parallelism" : "MEDIUM",
+      "updateSingleCardinalityProperties" : "FALSE",
+      "queueRequest" : "TRUE"
+    }'  >> testoutfileofcurl.txt
+[ec2-user@ip-172-31-43-9 ~]$
+
+-----------------------------------------------------------------
+Step 16:
+
+Check status of above bulk loading step.
+
+curl -X GET 'https://covid19awssomeid.cluster-c6g3vtdf1uqy.ap-south-1.neptune.amazonaws.com:8182/loader/4acf8d2b-598f-4ae0-82f3-895d42ff52f9?details=true&errors=true&page=1&errorsPerPage=3' 
+
+------------------------------------------------------------------------------------
+--Connecting to Gremin consol in command prompt
+:remote connect tinkerpop.server conf/neptune-remote.yaml
+:remote console
+:exit
+
+---------------------------------------------------------------------------------
+---Run below curl commads to bulk load all vertices
+curl -X POST \
+    -H 'Content-Type: application/json' \
+    https://covid19awssomeid.cluster-c6g3vtdf1uqy.ap-south-1.neptune.amazonaws.com:8182/loader -d '
+    {
+      "source" : "s3://cg-covid19-poc/gps_data_neptune_vertices/patient_contacted_vertex_latest2.csv",
+      "format" : "csv",
+      "iamRoleArn" : "arn:aws:iam::999735087364:role/NeptuneLoadFromS3",
+      "region" : "ap-south-1",
+      "failOnError" : "TRUE",
+      "parallelism" : "MEDIUM",
+      "updateSingleCardinalityProperties" : "FALSE",
+      "queueRequest" : "TRUE"
+    }'
+
+--chcek status
+curl -X GET 'https://covid19awssomeid.cluster-c6g3vtdf1uqy.ap-south-1.neptune.amazonaws.com:8182/loader/5bda5715-58a3-4a41-a595-2dff20b99bc7?details=true&errors=true&page=1&errorsPerPage=3' 
+
+---Run below curl commads to bulk load all contact edges only
+curl -X POST \
+    -H 'Content-Type: application/json' \
+    https://covid19awssomeid.cluster-c6g3vtdf1uqy.ap-south-1.neptune.amazonaws.com:8182/loader -d '
+    {
+      "source" : "s3://cg-covid19-poc/gps_data_neptune_contact_edges/patient_contacted_edges_latest2.csv",
+      "format" : "csv",
+      "iamRoleArn" : "arn:aws:iam::999735087364:role/NeptuneLoadFromS3",
+      "region" : "ap-south-1",
+      "failOnError" : "TRUE",
+      "parallelism" : "MEDIUM",
+      "updateSingleCardinalityProperties" : "FALSE",
+      "queueRequest" : "TRUE"
+    }'

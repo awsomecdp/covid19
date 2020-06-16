@@ -1,0 +1,222 @@
+Environent setup: AWS Services launch and configuration.
+
+Data collection
+Step 1: downloaded public datasets available Hospitals,Clinics list, Covid19 confomred cases, Isolation Data, all india area pincode list
+Step 2: Cleaned and transformed Step 1 datasets and prepared as batch files. place in staging area.
+Step 3: Created GPS data simulators program, this simulator program makes use of area pincode configured for each individual patient. pincode are converted to addresses are send to Google MAPS directions to get all geo coordinates between two address. 
+Step 4.all values of Step 3 (lat,long,imei,phoneno,timetamp) are send to Kinesis firehose(DS) put_record as comma seperated values as records.
+Step 5: configure Mobile Nos, and flag ='Y' to generate GPS data in one of the configuration file ,so simulator will only generate only those mobiles GPS route lat,long and send to Kinesis firehose and write records to GPS Data raw bucket.
+
+Data Processing:
+Step 6: AWS glue to crawl GPS data buckets and create and raw and processing catalog tables of data lake.
+Step 7: Some of the data conversion steps are developed in athena using below steps.
+Step 8:
+
+below sqls, basically transfer GPS data to multiple formats for Dashboading, Visualization and loading into Neptune Graph DB Edges format 
+In this step we are creating external table to pointing path to GPS raw data posted by Kinesis.
+
+CREATE EXTERNAL TABLE IF NOT EXISTS awsomecovid19.covid19_gps_tracker_data (
+  latitude string,
+  longitude string,
+  imei string,
+  Mobile string,
+  Timestamp string
+)  
+ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe'
+WITH SERDEPROPERTIES (
+  'serialization.format' = ',',
+  'field.delim' = ','
+) LOCATION 's3://gps-data-firehose/'
+TBLPROPERTIES ('has_encrypted_data'='false');
+
+Step 9: views to read Step 8 table
+CREATE OR REPLACE VIEW covid19_gps_data AS 
+SELECT *
+FROM
+  awsomecovid19.covid19_gps_tracker_data;
+
+CREATE OR REPLACE VIEW covid19_gps_data_neptune AS 
+SELECT *
+FROM
+  covid19_gps_data;
+
+Step 10: In this step calculating distance between two patients coordinates. using haversine distance formula.and its only for last one hour GPS data.
+
+CREATE OR REPLACE VIEW covid19_gps_data_neptune_closedistance AS 
+SELECT
+  a.*
+, "b"."latitude" "latitude2"
+, "b"."longitude" "longitude2"
+, "b"."imei" "imei2"
+, "b"."mobile" "mobile2"
+, "b"."timestamp" "timestamp2"
+, ("acos"((("sin"((("pi"() * CAST("a"."latitude" AS double)) / 180.0)) * "sin"((("pi"() * CAST("b"."latitude" AS double)) / 180.0))) + (("cos"((("pi"() * CAST("a"."latitude" AS double)) / 180.0)) * "cos"((("pi"() * CAST("b"."latitude" AS double)) / 180.0))) * "cos"(((("pi"() * CAST("b"."longitude" AS double)) / 180.0) - (("pi"() * CAST("a"."longitude" AS double)) / 180.0)))))) * 6371) "distance"
+FROM
+  awsomecovid19.covid19_gps_data_neptune a
+, awsomecovid19.covid19_gps_data_neptune b
+WHERE CAST("a"."timestamp" AS timestamp) BETWEEN cast(current_timestamp as timestamp) - INTERVAL  '1' HOUR and cast (current_timestamp as timestamp)
+ and CAST("b"."timestamp" AS timestamp) BETWEEN cast(current_timestamp as timestamp) - INTERVAL  '1' HOUR and cast (current_timestamp as timestamp);
+
+Step 11:
+In this we are taking only below 10km distance as relationships into consideration. and fetching patient no of mobile1 from master table.
+
+CREATE OR REPLACE VIEW covid19_gps_data_neptune_within10km AS 
+SELECT
+  "a"."mobile"
+, "a"."mobile2"
+, "latitude"
+, "longitude"
+, "latitude2"
+, "longitude2"
+, cast("distance" as integer) as distance 
+, "b"."patientno"
+, "timestamp"
+FROM
+  covid19_gps_data_neptune_closedistance a
+, awsomecovid19.covid19_gps_enabled_mobiles b
+WHERE (("distance" BETWEEN 0.001 AND 10.0) AND (CAST("a"."mobile" AS varchar) = CAST("b"."mobile" AS varchar)))
+ and cast(distance as varchar)!='NaN';
+
+
+Step 12:
+
+Below step we are fetching patients no of mobile2 from master table.
+CREATE OR REPLACE VIEW covid19_gps_data_neptune_within10km_p2 AS 
+SELECT DISTINCT
+  "a"."mobile"
+, "a"."mobile2"
+, "latitude"
+, "longitude"
+, "latitude2"
+, "longitude2"
+, "distance"
+, "a"."patientno"
+, "timestamp"
+, "b"."patientno" "patientno_contacted"
+FROM
+  covid19_gps_data_neptune_within10km a
+, awsomecovid19.covid19_gps_enabled_mobiles b
+WHERE ((CAST("a"."mobile2" AS varchar) = CAST("b"."mobile" AS varchar)));
+
+Step 13:
+
+In this step we are eliminating all same distance/same patient nos from final dataset.
+
+CREATE OR REPLACE VIEW covid19_nearby_distances AS 
+SELECT
+  CONCAT(cast("row_number"() OVER () as varchar),replace(replace(replace(replace(cast(current_timestamp AS VARCHAR),'UTC'),'-'),':'),'.')) "id"
+, 'distance' "label"
+, "replace"("patientno", 'P-', '') "fromp"
+, "replace"("patientno_contacted", 'P-', '') "top"
+, CAST("distance" AS integer) "distance"
+, "timestamp" "timestamp"
+FROM
+  covid19_gps_data_neptune_within10km_p2 a
+WHERE ("patientno" <> "patientno_contacted") ;
+
+Step 14: 
+----------------------------------------------------------------------------------
+-----------lambda to generate neptune format file
+In this step we are creating Lambda to extract Graph DB format data of last one hour edges(Two patients criscrossed coordinates).
+
+import boto3
+import time
+
+def lambda_handler(event, context):
+        client = boto3.client('athena')
+        queryStart = client.start_query_execution(
+                            QueryString = 'SELECT distinct id as "~id",label as "~label",fromp as "~from",top as "~to",distance,timestamp FROM awsomecovid19.covid19_nearby_distances;',
+                            QueryExecutionContext = {
+                                                    'Database': 'awsomecovid19'
+                                                    }
+                                                ,
+                            ResultConfiguration = { 
+                                                 'OutputLocation': 's3://cg-covid19-poc/gps_data_neptune/'
+                                                }
+                            )
+
+Step 15:
+In this step we are bulk loading Neptune data file to Neptune DB.
+
+-----------------------------------------------------------------------------------
+----------Shell script to automate distance edges load
+[ec2-user@ip-172-31-43-9 ~]$ cat source_s3_target_neptune.sh
+aws s3 mv 's3://cg-covid19-poc/gps_data_neptune_edges/' 's3://cg-covid19-poc/gps_data_neptune_edges_arch/'  --recursive
+
+aws s3 cp 's3://cg-covid19-poc/gps_data_neptune/' 's3://cg-covid19-poc/gps_data_neptune_edges/' --exclude '*' --include '*.csv' --recursive
+aws s3 mv 's3://cg-covid19-poc/gps_data_neptune/' 's3://cg-covid19-poc/gps_data_neptune_arch/'  --recursive
+curl -X POST \
+    -H 'Content-Type: application/json' \
+    https://covid19awssomeid.cluster-c6g3vtdf1uqy.ap-south-1.neptune.amazonaws.com:8182/loader -d '
+    {
+      "source" : "s3://cg-covid19-poc/gps_data_neptune_edges/",
+      "format" : "csv",
+      "iamRoleArn" : "arn:aws:iam::999735087364:role/NeptuneLoadFromS3",
+      "region" : "ap-south-1",
+      "failOnError" : "TRUE",
+      "parallelism" : "MEDIUM",
+      "updateSingleCardinalityProperties" : "FALSE",
+      "queueRequest" : "TRUE"
+    }'  >> testoutfileofcurl.txt
+[ec2-user@ip-172-31-43-9 ~]$
+
+-----------------------------------------------------------------
+Step 16:
+
+Check status of above bulk loading step.
+
+curl -X GET 'https://covid19awssomeid.cluster-c6g3vtdf1uqy.ap-south-1.neptune.amazonaws.com:8182/loader/4acf8d2b-598f-4ae0-82f3-895d42ff52f9?details=true&errors=true&page=1&errorsPerPage=3' 
+
+------------------------------------------------------------------------------------
+--Connecting to Gremin consol in command prompt
+:remote connect tinkerpop.server conf/neptune-remote.yaml
+:remote console
+:exit
+
+---------------------------------------------------------------------------------
+---Run below curl commads to bulk load all vertices
+curl -X POST \
+    -H 'Content-Type: application/json' \
+    https://covid19awssomeid.cluster-c6g3vtdf1uqy.ap-south-1.neptune.amazonaws.com:8182/loader -d '
+    {
+      "source" : "s3://cg-covid19-poc/gps_data_neptune_vertices/patient_contacted_vertex_latest2.csv",
+      "format" : "csv",
+      "iamRoleArn" : "arn:aws:iam::999735087364:role/NeptuneLoadFromS3",
+      "region" : "ap-south-1",
+      "failOnError" : "TRUE",
+      "parallelism" : "MEDIUM",
+      "updateSingleCardinalityProperties" : "FALSE",
+      "queueRequest" : "TRUE"
+    }'
+
+--chcek status
+curl -X GET 'https://covid19awssomeid.cluster-c6g3vtdf1uqy.ap-south-1.neptune.amazonaws.com:8182/loader/5bda5715-58a3-4a41-a595-2dff20b99bc7?details=true&errors=true&page=1&errorsPerPage=3' 
+
+---Run below curl commads to bulk load all contact edges only
+curl -X POST \
+    -H 'Content-Type: application/json' \
+    https://covid19awssomeid.cluster-c6g3vtdf1uqy.ap-south-1.neptune.amazonaws.com:8182/loader -d '
+    {
+      "source" : "s3://cg-covid19-poc/gps_data_neptune_contact_edges/patient_contacted_edges_latest2.csv",
+      "format" : "csv",
+      "iamRoleArn" : "arn:aws:iam::999735087364:role/NeptuneLoadFromS3",
+      "region" : "ap-south-1",
+      "failOnError" : "TRUE",
+      "parallelism" : "MEDIUM",
+      "updateSingleCardinalityProperties" : "FALSE",
+      "queueRequest" : "TRUE"
+    }'
+
+
+Appendix A:
+
+All links:
+
+https://en.wikipedia.org/wiki/COVID-19_pandemic_in_Karnataka
+https://covid19.karnataka.gov.in/english
+
+http://www.postalpincode.in/Api-Details
+http://tinkerpop.apache.org/docs/current/reference/#tinkergraph-gremlin
+https://docs.aws.amazon.com/neptune/latest/userguide/bulk-load-data.html
+https://docs.aws.amazon.com/neptune/latest/userguide/access-graph-gremlin-console.html
+https://docs.aws.amazon.com/neptune/latest/userguide/bulk-load-tutorial-IAM.html
