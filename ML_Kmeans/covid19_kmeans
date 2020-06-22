@@ -1,0 +1,30 @@
+ML Approach to the Dataset with k-means clustering:
+
+Step 1: 
+Reading the covid data from s3 bucket
+ 
+Step 2:
+Considering the necessary dimensions(mobile, distance) in the data frame and determining the optimal k value for clustering by using elbow method. 
+
+Step 3: 
+clustering based on the total distance travelled by an individual patient
+ 
+Step 4: 
+Getting the cluster label for every distinct mobile number
+ 
+Step 5: 
+Clustering the entire dataset
+ 
+Step 6 : 
+visualizing the clusters
+ 
+Step 7: 
+Plotting the points on map where the patient travelled and colouring the patient points based on their cluster
+Identifying the maximum patient visited areas or affected regions in heatmap
+ 
+
+
+
+
+
+
