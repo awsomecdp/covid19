@@ -1,0 +1,62 @@
+
+-------------------------------Detailed example:
+--connect to gremlin and run follow steps to load and extract multi level joines/relationships of nodes
+--in this example, vertices are patient no (5001,5002...5009), edges are family relation and bustop
+graph = TinkerFactory.createModern()
+g = graph.traversal()
+g.V().count()
+g.E().count()
+:remote connect tinkerpop.server conf/neptune-remote.yaml
+:remote console
+
+
+Below sample will explain the schemas formats of Vertices, Contact Edges and Distance Edges of Covid patient 313
+Step 1: Add vertices 5001,5002,5003,5004,5005
+--schema format
+--label,patientno,id
+--Example: c19kap is lable 5001 is property c19patientno and P_5001 is unique id of patient
+g.addV('c19kap').property('c19patientno',5001).property(id, 'P_5001')
+g.addV('c19kap').property('c19patientno',5002).property(id, 'P_5002')
+g.addV('c19kap').property('c19patientno',5003).property(id, 'P_5003')
+g.addV('c19kap').property('c19patientno',5004).property(id, 'P_5004')
+g.addV('c19kap').property('c19patientno',5005).property(id, 'P_5005')
+g.addV('c19kap').property('c19patientno',5006).property(id, 'P_5006')
+g.addV('c19kap').property('c19patientno',5007).property(id, 'P_5007')
+g.addV('c19kap').property('c19patientno',5008).property(id, 'P_5008')
+g.addV('c19kap').property('c19patientno',5009).property(id, 'P_5009')
+
+
+Step 1: 5001 contacted 5002 and 5002, 5002 is daughter of 5001 and 5003 is wife of 5001
+--schema format of record
+--edid,label,from,to,contactrelation
+--econtactid1,contacted,5001,5002,'daughter'
+--econtactid2,contacted,5001,5003,'wife'
+g.V('P_5001').addE('contacted').to(g.V('P_5002')).property(id, 'econtactid1').property('relation','daughter')
+g.V('P_5001').addE('contacted').to(g.V('P_5003')).property(id, 'econtactid2').property('relation','wife')
+--add another edge P_5002 contacted P_5004 
+g.V('P_5002').addE('contacted').to(g.V('P_5004')).property(id, 'econtactid3').property('relation','friend')
+--query contacts of 5001 patinet
+g.V().has("c19patientno",5001).out('contacted')
+result: 
+v[P_5002]
+v[P_5003]
+g.V().has("c19patientno",5001).out('contacted').values()
+result: 
+5002 
+5003
+g.V().has("c19patientno",5001).out('contacted').out('contacted')
+result: (here 5001 had spread virus to his wife 5003 and daughter 5002, his daughter 5002 spread it friend 5004
+v[P_5004]
+
+--Below new edges added to 5004 is in closer distance to P_5005
+g.V('P_5004').addE('distance').to(g.V('P_5005')).property(id, 'econtactid4').property('bustop','friend')
+--Below new edges added to 5005 is in closer distance to P_5008
+g.V('P_5005').addE('distance').to(g.V('P_5008')).property(id, 'econtactid7').property('bustop','friend')
+--Below new edges added to 5005 is in closer distance to P_5009
+g.V('P_5005').addE('distance').to(g.V('P_5009')).property(id, 'econtactid8').property('bustop','friend')
+
+--below query will give result P_5005, means 5001 contacted 5002, 5002 contacted 5004 and 5004 is in closer distance to 5005
+g.V().has("c19patientno",5001).out('contacted').out('contacted').out('distance')
+--below query will give result P_5005, means 5001 contacted 5002, 5002 contacted 5004 and 5004, and 5004 is in closer distance to 5005, and 5005 is closer distance to 5008,5009 is in closer distance to 5008, 5009
+g.V().has("c19patientno",5001).out('contacted').out('contacted').out('distance').out()
+
